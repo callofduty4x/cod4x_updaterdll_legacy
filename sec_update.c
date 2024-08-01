@@ -122,8 +122,7 @@ int Sec_Update( )
 
 	Com_PrintStatus("Getting info about update...\n");	
 
-    Com_sprintf(buff, sizeof(buff), "http://" SEC_UPDATE_HOST "/?mode=1&ver=%s", Com_GetVersion());
-
+    Com_sprintf(buff, sizeof(buff), "http://" SEC_UPDATE_HOST "/?mode=1&ver=%s&os=%s", Com_GetVersion(), OS_STRING);
 	
 	filetransferobj = FileDownloadRequest( buff );
 
@@ -323,13 +322,30 @@ int Sec_Update( )
 		
 		
 		FS_BuildOSPathForThreadUni(FS_GetSavePath(), currFile->name, "", fromospath, 0 );
-		FS_BuildOSPathForThreadUni(FS_GetInstallPathUni(bufuni, sizeof(bufuni)), currFile->name, "", toospath, 0);
+		if(Q_strncmp(currFile->name, "fs_savepath", 11) == 0)
+		{
+			int startpath = 11;
+			if(currFile->name[11])
+			{
+				startpath = 12;
+			}
+			wchar_t realsavepath[4096];
+			Q_strncpyzUni(realsavepath, FS_GetSavePath(), sizeof(realsavepath));
+			
+			
+			if(wcsncmp(&realsavepath[wcslen(realsavepath) - 7], L"updates", 7) == 0)
+			{
+				realsavepath[wcslen(realsavepath) - 8] = '\0';
+			}
+			
+			FS_BuildOSPathForThreadUni(realsavepath, currFile->name + startpath, "", toospath, 0);	
+		}else{
+			FS_BuildOSPathForThreadUni(FS_GetInstallPathUni(bufuni, sizeof(bufuni)), currFile->name, "", toospath, 0);	
+		}
 		
 		FS_RenameOSPathUni( fromospath, toospath );
 		
-		
-		
-		if(!FS_SV_FileExists(currFile->name))
+		if(!FS_FileExistsOSPathUni(toospath))
 		{
 			Com_PrintError("Failed to rename file %s to %s\n", name2,currFile->name);
 			Com_PrintError("Update has failed!\n");

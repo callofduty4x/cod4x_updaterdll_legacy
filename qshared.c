@@ -1728,3 +1728,23 @@ void Z_Free(void* mem)
 	free(mem);
 }
 
+/*
+=============
+Q_WIsAnsiString
+
+Returns qtrue when this wchar string does not contain unicode characters
+=============
+*/
+
+qboolean Q_WIsAnsiString(wchar_t* str)
+{
+	while(*str)
+	{
+		if((uint16_t)*str > 255)
+		{
+			return qfalse;
+		}
+		str++;
+	}
+	return qtrue;
+}

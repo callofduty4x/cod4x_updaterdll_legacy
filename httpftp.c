@@ -117,9 +117,28 @@ static ftRequest_t* FT_CreateRequest(const char* address, const char* url)
 	
 }
 
+static void FT_ResetConnectionStatus( ftRequest_t* request )
+{
+	request->finallen = -1;
+	request->sentBytes = 0;
+	request->totalreceivedbytes = 0;
+	request->complete = qfalse;
+	request->code = 0;
+	request->version = 0;
+	request->status[0] = '\0';
+	request->headerLength = 0;
+	request->contentLength = 0;
+	request->contentLengthArrived = 0;
+	request->currentChunkLength = 0;
+	request->currentChunkReadOffset = 0;	
+	request->chunkedEncoding = 0;
+	request->stage = 0;
+	request->transfertotalreceivedbytes = 0;
+}
+
 static void FT_ResetRequest( ftRequest_t* request )
 {
-
+	
 	if(request->socket >= 0)
 	{
         NET_TcpCloseSocket(request->socket);
@@ -131,33 +150,26 @@ static void FT_ResetRequest( ftRequest_t* request )
 		request->transfersocket = -1;
 	}
 	request->lock = qtrue;
-	request->finallen = -1;
 	request->socket = -1;
 	request->transfersocket = -1;
 	request->address[0] = '\0';
 	request->url[0] = '\0';
 	request->username[0] = '\0';
 	request->password[0] = '\0';
+
 	request->active = qfalse;
 	request->transferactive = qfalse;
 	request->transferStartTime = 0;
-	request->sentBytes = 0;
-	request->totalreceivedbytes = 0;
+
+
 	request->extrecvmsg = NULL;
 	request->extsendmsg = NULL;
-	request->complete = qfalse;
-	request->code = 0;
-	request->version = 0;
-	request->status[0] = '\0';
+
 	request->mode = 0;
-	request->headerLength = 0;
-	request->contentLength = 0;
-	request->contentLengthArrived = 0;
-	request->currentChunkLength = 0;
-	request->currentChunkReadOffset = 0;	
-	request->chunkedEncoding = 0;
-	request->stage = 0;
 	request->protocol = 0;
+
+	FT_ResetConnectionStatus(  request );
+	
 	MSG_Clear(&request->recvmsg);
 	MSG_Clear(&request->sendmsg);
 	MSG_Clear(&request->transfermsg);
@@ -341,6 +353,8 @@ static void HTTP_BuildNewRequest( ftRequest_t* request )
 	char address[MAX_STRING_CHARS];
 	char *port;
 	
+	FT_ResetConnectionStatus( request );
+	
 	request->protocol = FT_PROTO_HTTP;
 	request->active = qtrue;
 
@@ -361,6 +375,7 @@ static void HTTP_BuildNewRequest( ftRequest_t* request )
 				"\r\n", encodedUrl, address);
 	
 	FT_AddData(request, getbuffer, strlen(getbuffer));
+Com_Printf("Header: %s\n", getbuffer);
 
 }
 
@@ -416,7 +431,6 @@ static int HTTP_ProcessChunkedEncoding(ftRequest_t* request, qboolean connection
 	do
 	{
 		MSG_ReadStringLine(&request->recvmsg, line, sizeof(line));
-		
 		s = strchr(line, '\r');
 		if(s)
 		{
@@ -428,16 +442,24 @@ static int HTTP_ProcessChunkedEncoding(ftRequest_t* request, qboolean connection
 		}
 		
 		chunksize = strtol(line, NULL, 16);
+		/* To update */
 		if(chunksize == 0)
 		{
 			request->contentLength = request->currentChunkLength;
+			request->recvmsg.cursize = request->contentLength + request->headerLength;
+			request->recvmsg.readcount = 0;
+			request->recvmsg.data[request->recvmsg.cursize] = '\0';
 			request->extrecvmsg = &request->recvmsg;
 			request->finallen = request->recvmsg.cursize;
-			return 1;	
+			return 1;
+		}
+		/* To update */
+		if(chunksize < 1)
+		{
+			return -1;
 		}
 		if(request->recvmsg.cursize - request->recvmsg.readcount >= chunksize +2)
 		{
-			
 			writeoffset = request->headerLength + request->currentChunkLength;
 			memmove(request->recvmsg.data + writeoffset, request->recvmsg.data + request->recvmsg.readcount, chunksize);
 			request->currentChunkLength += chunksize;
@@ -497,6 +519,13 @@ static int HTTP_SendReceiveData(ftRequest_t* request)
 	if(request->finallen == -1)
 	{
 		gotheader = qfalse;
+		
+		request->version = 0;
+		request->code = 0;
+		request->status[0] = '\0';
+		request->contentLength = 0;
+		request->contentLengthArrived = 0;
+		request->chunkedEncoding = 0;
 		/* 1st check if the header is complete */
 		while ((line = MSG_ReadStringLine(&request->recvmsg, stringlinebuf, sizeof(stringlinebuf))) && line[0] != '\0' )
 		{

@@ -431,6 +431,24 @@ qboolean FS_FileExistsOSPath( const char *osPath ) {
 }
 
 /*
+===========
+FS_FileExistsOSPathUni
+
+===========
+*/
+qboolean FS_FileExistsOSPathUni( const wchar_t *osPath ) {
+	
+	FILE* fh = _wfopen( osPath, L"rb" );
+	
+	if(fh == NULL)
+		return qfalse;
+	
+	fclose( fh );
+	return qtrue;
+	
+}
+
+/*
 ================
 FS_filelengthOSPath
 
@@ -1208,6 +1226,120 @@ void Sys_LeaveCriticalSection()
 	LeaveCriticalSection(&sys_xCriticalSection);
 }
 
+void Sys_GetLastErrorAsString(char* errbuf, int len)
+{
+	int lastError = GetLastError();
+	if(lastError != 0)
+	{
+		FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, NULL, lastError, MAKELANGID(LANG_NEUTRAL,SUBLANG_DEFAULT), (LPSTR)errbuf, len -1, NULL);
+	}else{
+		Q_strncpyz(errbuf, "Unknown Error", len);
+	}
+}
+
+int Sys_SortVersionDirs(const void* cmp1, const void* cmp2)
+{
+	const char* stri1 = *(const char**)cmp1;
+	const char* stri2 = *(const char**)cmp2;
+
+	return Q_stricmp(stri1, stri2);
+}
+
+
+
+int Sys_ListDirectories(const wchar_t* dir, char** list, int limit)
+{
+  int count, i;
+  HANDLE dhandle;
+  struct _WIN32_FIND_DATAW FindFileData;
+  char *ansifilename;
+  wchar_t searchdir[MAX_OSPATH];
+  char errorString[1024];
+
+  list[0] = NULL;
+
+  FS_BuildOSPathForThreadUni( dir, "*", "", searchdir, 0 );
+
+  dhandle = FindFirstFileW(searchdir, &FindFileData);
+  if ( dhandle == (HANDLE)-1 )
+  {
+	Sys_GetLastErrorAsString(errorString, sizeof(errorString));
+	Com_DPrintf("Sys_ListDirectories: %s\n", errorString);
+    return 0;
+  }
+  count = 0;
+
+  do
+  {
+
+    if ( !FindFileData.cFileName[0])
+    {
+		continue;
+		}
+		if(FindFileData.cFileName[0] == L'.' && (FindFileData.cFileName[1] == L'.' || !FindFileData.cFileName[1]))
+		{
+			continue;
+		}
+
+		/* is directory ? */
+	  if ( FindFileData.dwFileAttributes & 0x10)
+		{
+
+			if(Q_WIsAnsiString(FindFileData.cFileName) == qfalse)
+			{
+
+				//We won't support non ANSI chars
+				continue;
+			}
+
+			list[count] = malloc(wcslen(FindFileData.cFileName) +1);
+
+			if(list[count] == NULL)
+			{
+				break;
+			}
+
+			ansifilename = list[count];
+
+			/* String copy as ANSI string */
+			for(i = 0; FindFileData.cFileName[i]; ++i)
+			{
+				ansifilename[i] = FindFileData.cFileName[i];
+			}
+			ansifilename[i] = '\0';
+			count++;
+		}
+
+  }
+  while ( FindNextFileW(dhandle, &FindFileData) != 0 && count < limit -1);
+
+  FindClose(dhandle);
+
+  list[count] = NULL;
+
+  return count;
+}
+
+/*
+==============
+Sys_FreeFileList
+==============
+*/
+void Sys_FreeFileList( char **list )
+{
+	int i;
+
+	if ( !list ) {
+		return;
+	}
+
+	for ( i = 0 ; list[i] ; i++ ) {
+		free( list[i] );
+	}
+
+}
+
+
 
 wchar_t fs_savepathbuf[1024];
 char fs_installpathbuf[1024];
@@ -1276,7 +1408,7 @@ qboolean Sys_IsWindowsVistaAware()
 }
 
 
-BOOL __cdecl CoD4UpdateMain(HMODULE hModule, const char* fs_write_base, const wchar_t* updatepath, const char* version, int numargs, WinVars_t* g_wvptr )
+BOOL __cdecl CoD4UpdateMain(HMODULE hModule, const char* fs_write_base, const wchar_t* updatepath, const char* nullver, int numargs, WinVars_t* g_wvptr )
 {
 
 	Sys_InitializeCriticalSection();
@@ -1291,18 +1423,43 @@ BOOL __cdecl CoD4UpdateMain(HMODULE hModule, const char* fs_write_base, const wc
 	NET_Init();
 	Sec_Init();
 	
-	
-	
 	FS_SetupSavePath(updatepath);
 	FS_SetupInstallPath(fs_write_base);
 	
-	Q_strncpyz(versionstring, version, sizeof(versionstring));
+	wchar_t versiondir[1024];
+	char* list[1024];
+	char* filteredList[1024];
+	const char* filestring;
+	int i, j;
 
-	
-	
+	FS_BuildOSPathForThreadUni( FS_GetSavePath(), "bin", "", versiondir, 0);
+
+	int count = Sys_ListDirectories(versiondir, list, sizeof(list) / sizeof(list[0]));
+
+	for(i = 0, j = 0; i < count; ++i)
+	{
+		if(Q_stricmpn(list[i], "cod4x_", 6) == 0)
+		{
+			filteredList[j] = list[i];
+			++j;
+		}
+	}
+	filteredList[j] = NULL;
+
+	qsort(filteredList, j, sizeof(filteredList[0]), Sys_SortVersionDirs);
+
+	filestring = filteredList[j -1];
+
+	int version = atoi(filestring + 6);
+
+	Com_sprintf(versionstring, sizeof(versionstring), "%d.x", version);
+
+	Sys_FreeFileList( list );
+
+
 	//Disable folder virtualization 
     HANDLE Token;
-	DWORD disable;
+	DWORD disable = 0;
 	
     if (OpenProcessToken(GetCurrentProcess(), MAXIMUM_ALLOWED, &Token)){
         SetTokenInformation(Token, (TOKEN_INFORMATION_CLASS)24, &disable, sizeof(disable));
@@ -1457,3 +1614,4 @@ void CoD4UpdateShutdown(int exitcode)
 	}
 		
 }
+

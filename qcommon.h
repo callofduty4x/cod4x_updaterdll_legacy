@@ -676,7 +676,7 @@ char* FS_GetInstallPath();
 wchar_t* FS_GetInstallPathUni(wchar_t* buf, int size);
 wchar_t* FS_GetSavePath();
 void FS_RenameOSPathUni( const wchar_t *from_ospath, const wchar_t *to_ospath );
-
+qboolean FS_FileExistsOSPathUni( const wchar_t *osPath );
 #define fs_gameDirVar getcvaradr(0xcb199a4)
 #define fs_homepath getcvaradr(0xCB1DCC0)
 //#define fs_basepath getcvaradr(0xcb199a4)

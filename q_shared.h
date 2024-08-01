@@ -1733,4 +1733,5 @@ void CharToHexUni(wchar_t* string, char* hexstring, int size);
 void HexToCharUni(char* hexstring, wchar_t* string, int size);
 void CoD4UpdateShutdown(int exitcode);
 qboolean Sys_IsWindowsVistaAware();
+qboolean Q_WIsAnsiString(wchar_t* str);
 #endif	// __Q_SHARED_H
