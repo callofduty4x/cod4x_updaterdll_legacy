@@ -1,6 +1,8 @@
 #define WIN32_LEAN_AND_MEAN
 
 #include "q_shared.h"
+#include "qcommon.h"
+#include "sec_common.h"
 
 #include <windows.h>
 #include <Psapi.h>
@@ -11,10 +13,46 @@
 #include <stdlib.h>
 #include <mmsystem.h>
 #include "blake\blake2.h"
+#include "windows_inc.h"
 
-void (*Com_Printf)(const char* fmt, ...);
+
+typedef struct{
+	HINSTANCE reflib_library;           // Handle to refresh DLL
+	qboolean reflib_active;
+	HWND hWnd;							//0xcc1b6fc
+	HINSTANCE hInstance;				//0xcc1b700
+	qboolean activeApp;
+	qboolean isMinimized;				//0xcc1b708
+	OSVERSIONINFO osversion;
+	// when we get a windows message, we store the time off so keyboard processing
+	// can know the exact time of an event
+	unsigned sysMsgTime;				//0xcc1b710
+} WinVars_t;
+
+
 #define PATH_SEP '\\'
 
+wchar_t* FS_GetSavePath();
+
+/*
+================
+Sys_Milliseconds
+================
+*/
+
+int Sys_Milliseconds( void ) {
+	int sys_curtime;
+	static int sys_timeBase;
+	static qboolean initialized = qfalse;
+
+	if ( !initialized ) {
+		sys_timeBase = timeGetTime();
+		initialized = qtrue;
+	}
+	sys_curtime = timeGetTime() - sys_timeBase;
+
+	return sys_curtime;
+}
 
 
 /*
@@ -25,7 +63,7 @@ Both client and server can use this, and it will
 do the appropriate thing.
 =============
 */
-void Com_Error( const char *fmt, ... ) {
+void Com_Error( int null, const char *fmt, ... ) {
 	va_list		argptr;
 	char com_errorMessage[2048];
 
@@ -33,8 +71,10 @@ void Com_Error( const char *fmt, ... ) {
 	Q_vsnprintf (com_errorMessage, sizeof(com_errorMessage),fmt,argptr);
 	va_end (argptr);
 
-	MessageBoxA(NULL, com_errorMessage, "Call of Duty 4 - Update has Failed", MB_OK | MB_ICONERROR);
-	exit( -1 );
+	MessageBoxA(NULL, com_errorMessage, "Call of Duty 4 - Update has Failed", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+	
+	CoD4UpdateShutdown(1);
+	
 }
 
 /*
@@ -54,8 +94,51 @@ void Com_ErrorUni( const wchar_t *fmt, ... ) {
 	vsnwprintf (com_errorMessage, numchar, fmt, argptr );
 	va_end (argptr);
 
-	MessageBoxW(NULL, com_errorMessage, L"Call of Duty 4 - Update has Failed", MB_OK | MB_ICONERROR);
-	exit( -1 );
+	MessageBoxW(NULL, com_errorMessage, L"Call of Duty 4 - Update has Failed", MB_OK | MB_ICONERROR | MB_APPLMODAL);
+	CoD4UpdateShutdown(1);;
+}
+
+/*
+=============
+Com_Printf
+
+Both client and server can use this, and it will output
+to the apropriate place.
+
+A raw string should NEVER be passed as fmt, because of "%f" type crashers.
+=============
+*/
+void QDECL Com_Printf( const char *fmt, ... ) {
+	va_list		argptr;
+	char		msg[MAXPRINTMSG];
+
+	va_start (argptr,fmt);
+	Q_vsnprintf (msg, sizeof(msg), fmt, argptr);
+	va_end (argptr);
+
+    Conbuf_AppendText( msg );
+}
+
+/*
+=============
+Com_PrintStatus
+
+Both client and server can use this, and it will output
+to the apropriate place.
+
+A raw string should NEVER be passed as fmt, because of "%f" type crashers.
+=============
+*/
+void QDECL Com_PrintStatus( const char *fmt, ... ) {
+	va_list		argptr;
+	char		msg[MAXPRINTMSG];
+
+	va_start (argptr,fmt);
+	Q_vsnprintf (msg, sizeof(msg), fmt, argptr);
+	va_end (argptr);
+
+    Sys_SetStatusText( msg, 0 );
+	Conbuf_AppendText( msg );
 }
 
 /*
@@ -90,6 +173,41 @@ static void FS_StripTrailingSeperatorUni( wchar_t *path ) {
 	if(path[len -1] == PATH_SEPUNI)
 	{
 		path[len -1] = L'\0';
+	}
+}
+
+
+/*
+====================
+FS_ReplaceSeparators
+
+Fix things up differently for win/unix/mac
+====================
+*/
+void FS_ReplaceSeparators( char *path ) {
+	char	*s;
+
+	for ( s = path ; *s ; s++ ) {
+		if ( *s == '/' || *s == '\\' ) {
+			*s = PATH_SEP;
+		}
+	}
+}
+
+/*
+====================
+FS_ReplaceSeparatorsUni
+
+Fix things up differently for win/unix/mac
+====================
+*/
+void FS_ReplaceSeparatorsUni( wchar_t *path ) {
+	wchar_t	*s;
+
+	for ( s = path ; *s ; s++ ) {
+		if ( *s == L'/' || *s == L'\\' ) {
+			*s = PATH_SEPUNI;
+		}
 	}
 }
 
@@ -167,7 +285,7 @@ void FS_CopyFile( char *fromOSPath, char *toOSPath ) {
 	// probably won't work on a mac... Its only for developers anyway...
 	buf = malloc( len );
 	if ( fread( buf, 1, len, f ) != len ) {
-		Com_Error( "Short read in FS_Copyfiles()\n" );
+		Com_Error(0, "Short read in FS_Copyfiles()\n" );
 	}
 	fclose( f );
 
@@ -181,7 +299,7 @@ void FS_CopyFile( char *fromOSPath, char *toOSPath ) {
 		return;
 	}
 	if ( fwrite( buf, 1, len, f ) != len ) {
-		Com_Error( "Short write in FS_Copyfiles()\n" );
+		Com_Error(0, "Short write in FS_Copyfiles()\n" );
 	}
 	fclose( f );
 	free( buf );
@@ -426,7 +544,7 @@ int FS_ReadOSPath( void *buffer, int len, FILE* f ) {
 		}
 
 		if (read == -1) {
-			Com_Error ("FS_ReadOSPath: -1 bytes read");
+			Com_Error (0,"FS_ReadOSPath: -1 bytes read");
 		}
 
 		remaining -= read;
@@ -451,7 +569,7 @@ int FS_ReadFileOSPath( const char *ospath, void **buffer ) {
 	
 	
 	if ( !ospath || !ospath[0] ) {
-		Com_Error( "FS_ReadFile with empty name\n" );
+		Com_Error(0, "FS_ReadFile with empty name\n" );
 	}
 
 	buf = NULL;	// quiet compiler warning
@@ -490,11 +608,11 @@ qboolean FS_FileHashUni(const wchar_t* ospath, char* outhash, int lenhash)
 	uint8_t hash[BLAKE2S_OUTBYTES];
 	  
 	if ( !ospath || !ospath[0] ) {
-		Com_Error( "FS_FileHash with empty name\n" );
+		Com_Error(0, "FS_FileHash with empty name\n" );
 	}
 	
 	if ( !outhash || lenhash < 2*BLAKE2S_OUTBYTES +1 ) {
-		Com_Error( "FS_FileHash with invalid argument\n" );
+		Com_Error(0, "FS_FileHash with invalid argument\n" );
 	}	
 		
 	// look for it in the filesystem or pack files
@@ -505,7 +623,7 @@ qboolean FS_FileHashUni(const wchar_t* ospath, char* outhash, int lenhash)
 
     if( blake2s_init( &S, sizeof(hash) ) < 0 )
 	{
-		Com_Error("blake2s_init() has failed");
+		Com_Error(0,"blake2s_init() has failed");
 	}
 	
 	do
@@ -536,11 +654,11 @@ qboolean FS_FileHash(const char* ospath, char* outhash, int lenhash)
 	uint8_t hash[BLAKE2S_OUTBYTES];
 	  
 	if ( !ospath || !ospath[0] ) {
-		Com_Error( "FS_FileHash with empty name\n" );
+		Com_Error(0, "FS_FileHash with empty name\n" );
 	}
 	
 	if ( !outhash || lenhash < 2*BLAKE2S_OUTBYTES +1 ) {
-		Com_Error( "FS_FileHash with invalid argument\n" );
+		Com_Error(0, "FS_FileHash with invalid argument\n" );
 	}	
 		
 	// look for it in the filesystem or pack files
@@ -551,7 +669,7 @@ qboolean FS_FileHash(const char* ospath, char* outhash, int lenhash)
 
     if( blake2s_init( &S, sizeof(hash) ) < 0 )
 	{
-		Com_Error("blake2s_init() has failed");
+		Com_Error(0,"blake2s_init() has failed");
 	}
 	
 	do
@@ -574,6 +692,166 @@ qboolean FS_FileHash(const char* ospath, char* outhash, int lenhash)
 }
 
 
+void FS_BuildOSPathForThreadUni(const wchar_t *base, const char *game, const char *qpath, wchar_t *fs_path, int fs_thread)
+{
+  wchar_t basename[MAX_OSPATH];
+  wchar_t gamename[MAX_OSPATH];
+  wchar_t qpathname[MAX_QPATH];
+  int len;
+
+  if ( !game || !*game )
+    game = "";
+
+  Q_strncpyzUni(basename, base, sizeof(basename));
+  Q_StrToWStr(gamename, game, sizeof(gamename));
+  Q_StrToWStr(qpathname, qpath, sizeof(qpathname));
+  
+  len = wcslen(basename);
+  if(len > 0 && (basename[len -1] == L'/' || basename[len -1] == L'\\'))
+  {
+        basename[len -1] = L'\0';
+  }
+
+  len = wcslen(gamename);
+  if(len > 0 && (gamename[len -1] == L'/' || gamename[len -1] == L'\\'))
+  {
+        gamename[len -1] = L'\0';
+  }
+  
+  if( Com_sprintfUni(fs_path, sizeof(wchar_t) * MAX_OSPATH, L"%s/%s/%s", basename, gamename, qpathname) >= MAX_OSPATH )
+  {
+    if ( fs_thread )
+    {
+        fs_path[0] = 0;
+        return;
+    }
+    Com_Error(ERR_FATAL, "FS_BuildOSPath: os path length exceeded");
+  }
+  FS_ReplaceSeparatorsUni(fs_path);
+  FS_StripTrailingSeperatorUni(fs_path);
+}
+
+void FS_BuildOSPathForThread(const char *base, const char *game, const char *qpath, char *fs_path, int fs_thread)
+{
+  char basename[MAX_OSPATH];
+  char gamename[MAX_OSPATH];
+
+  int len;
+
+  if ( !game || !*game )
+    game = "";
+
+  Q_strncpyz(basename, base, sizeof(basename));
+  Q_strncpyz(gamename, game, sizeof(gamename));
+
+  len = strlen(basename);
+  if(len > 0 && (basename[len -1] == '/' || basename[len -1] == '\\'))
+  {
+        basename[len -1] = '\0';
+  }
+
+  len = strlen(gamename);
+  if(len > 0 && (gamename[len -1] == '/' || gamename[len -1] == '\\'))
+  {
+        gamename[len -1] = '\0';
+  }
+  if ( Com_sprintf(fs_path, MAX_OSPATH, "%s/%s/%s", basename, gamename, qpath) >= MAX_OSPATH )
+  {
+    if ( fs_thread )
+    {
+        fs_path[0] = 0;
+        return;
+    }
+    Com_Error(ERR_FATAL, "FS_BuildOSPath: os path length exceeded");
+  }
+  FS_ReplaceSeparators(fs_path);
+  FS_StripTrailingSeperator(fs_path);
+
+}
+
+
+/*
+===========
+FS_SV_FOpenFileWriteSavePath
+===========
+*/
+FILE * FS_SV_FOpenFileWriteSavePath( const char *filename ) {
+	wchar_t ospath[MAX_OSPATH];
+	FILE* fh;
+	
+	FS_BuildOSPathForThreadUni( FS_GetSavePath(), filename, "", ospath, 0 );
+
+	if ( FS_CreatePathUni( ospath ) ) {
+		return NULL;
+	}
+	// enabling the following line causes a recursive function call loop
+	// when running with +set logfile 1 +set developer 1
+	//Com_DPrintf( "writing to: %s\n", ospath );
+	fh = _wfopen( ospath, L"wb" );
+	
+	if ( !fh ){
+		return NULL;
+	}
+
+	return fh;
+}
+
+/*
+============
+FS_SV_WriteFileToSavePath
+ 
+Filename are reletive to the quake search path
+============
+*/
+int FS_SV_WriteFileToSavePath( const char *qpath, const void *buffer, int size ) {
+  FILE* f;
+
+  
+  if ( !qpath || !buffer ) {
+    Com_Error( ERR_FATAL, "FS_WriteFile: NULL parameter" );
+  }
+
+  f = FS_SV_FOpenFileWriteSavePath( qpath );
+  if ( !f ) {
+    Com_Printf( "Failed to open %s\n", qpath );
+    return 0;
+  }
+
+  if ( fwrite( buffer, 1, size, f ) != size ) {
+	Com_PrintError("Short write in FS_SV_WriteFileToSavePath()\n" );
+	size = 0;
+  }
+
+  fclose( f );
+  
+  return size;
+}
+
+qboolean FS_SV_FileExists(const char *filename)
+{
+	char ospath[1024];
+	FS_BuildOSPathForThread(FS_GetInstallPath(), filename, "", ospath, 0);
+	return FS_FileExistsOSPath( ospath );
+}
+
+void FS_SV_Rename(const char* from, const char* to)
+{
+	char from_ospath[1024];
+	char to_ospath[1024];
+	
+	FS_BuildOSPathForThread(FS_GetInstallPath(), from, "", from_ospath, 0);	
+	FS_BuildOSPathForThread(FS_GetInstallPath(), to, "", to_ospath, 0);	
+	
+	FS_RenameOSPath( from_ospath, to_ospath );
+}
+
+void FS_SV_Remove(const char* filename)
+{
+	char ospath[1024];
+	FS_BuildOSPathForThread(FS_GetInstallPath(), filename, "", ospath, 0);
+	FS_RemoveOSPath(ospath);
+	
+}
 
 static int cmd_argc;
 static char *cmd_argv[MAX_STRING_TOKENS]; // points into cmd_tokenized
@@ -815,7 +1093,7 @@ int SV_Cmd_Argc( void ) {
 Cmd_Argv
 ============
 */
-char *Cmd_Argv( int arg ) {
+const char *Cmd_Argv( int arg ) {
 	if ( (unsigned)arg >= cmd_argc ) {
 		return "";
 	}
@@ -840,36 +1118,224 @@ unsigned int Sys_MillisecondsRaw()
 	return timeGetTime();
 }
 
-BOOL __cdecl CoD4UpdateMain(HMODULE hModule, const char* dllpath, const char* fs_write_base, const wchar_t* updatepath, const char* filelist, void (*sys_printf)(const char* fmt, ...), const char* dlhashs )
+
+
+/*
+=============
+NET_StringToAdr
+
+Traps "localhost" for loopback, passes everything else to system
+return 0 on address not found, 1 on address found with port, 2 on address found without port.
+=============
+*/
+int NET_StringToAdr( const char *s, netadr_t *a, netadrtype_t family )
+{
+	char	base[MAX_STRING_CHARS], *search;
+	char	*port = NULL;
+
+	if (!strcmp (s, "localhost")) {
+		Com_Memset (a, 0, sizeof(*a));
+		a->type = NA_LOOPBACK;
+// as NA_LOOPBACK doesn't require ports report port was given.
+		return 1;
+	}
+
+	Q_strncpyz( base, s, sizeof( base ) );
+	
+	if(*base == '[' || Q_CountChar(base, ':') > 1)
+	{
+		// This is an ipv6 address, handle it specially.
+		search = strchr(base, ']');
+		if(search)
+		{
+			*search = '\0';
+			search++;
+
+			if(*search == ':')
+				port = search + 1;
+		}
+		
+		if(*base == '[')
+			search = base + 1;
+		else
+			search = base;
+	}
+	else
+	{
+		// look for a port number
+		port = strchr( base, ':' );
+		
+		if ( port ) {
+			*port = '\0';
+			port++;
+		}
+		
+		search = base;
+	}
+
+	if(!Sys_StringToAdr(search, a, family))
+	{
+		a->type = NA_BAD;
+		return 0;
+	}
+
+	if(port)
+	{
+		a->port = BigShort((short) atoi(port));
+		return 1;
+	}
+	else
+	{
+		a->port = BigShort(PORT_SERVER);
+		return 2;
+	}
+}
+
+CRITICAL_SECTION sys_xCriticalSection;
+
+void Sys_InitializeCriticalSection()
+{
+	InitializeCriticalSection(&sys_xCriticalSection);
+}
+
+void Sys_EnterCriticalSection()
+{
+	EnterCriticalSection(&sys_xCriticalSection);
+}
+
+void Sys_LeaveCriticalSection()
+{
+	LeaveCriticalSection(&sys_xCriticalSection);
+}
+
+
+wchar_t fs_savepathbuf[1024];
+char fs_installpathbuf[1024];
+qboolean windowsVistaAware;
+wchar_t* FS_GetSavePath()
+{
+	return fs_savepathbuf;
+}
+
+void FS_SetupSavePath(const wchar_t *updatepath)
+{
+	Q_strncpyzUni(fs_savepathbuf, updatepath, sizeof(fs_savepathbuf));
+	FS_StripTrailingSeperatorUni( fs_savepathbuf );
+	FS_ReplaceSeparatorsUni(fs_savepathbuf);
+}
+
+void FS_SetupInstallPath(const char* installpath)
+{
+	Q_strncpyz(fs_installpathbuf, installpath, sizeof(fs_installpathbuf));
+	FS_StripTrailingSeperator( fs_installpathbuf );
+	FS_ReplaceSeparators(fs_installpathbuf);
+}
+
+
+wchar_t* FS_GetInstallPathUni(wchar_t* buf, int size)
+{
+	Q_StrToWStr(buf, FS_GetInstallPath(), size);
+	return buf;
+}
+
+char* FS_GetInstallPath()
+{
+	return fs_installpathbuf;	
+}
+
+
+char versionstring[1024];
+
+const char* Com_GetVersion()
+{
+	return versionstring;
+}
+
+void Sys_CheckOS()
 {
 
+	OSVERSIONINFO osversion;
+	
+	osversion.dwOSVersionInfoSize = sizeof( osversion );
+
+	if ( !GetVersionEx( &osversion ) ) {
+		windowsVistaAware = qfalse;
+	}
+		
+	if(osversion.dwMajorVersion >= 6)
+	{
+		windowsVistaAware = qtrue;
+	}else{
+		windowsVistaAware = qfalse;
+	}
+}
+
+qboolean Sys_IsWindowsVistaAware()
+{
+	return windowsVistaAware;
+}
+
+
+BOOL __cdecl CoD4UpdateMain(HMODULE hModule, const char* fs_write_base, const wchar_t* updatepath, const char* version, int numargs, WinVars_t* g_wvptr )
+{
+
+	Sys_InitializeCriticalSection();
+	
+	Sys_CheckOS();
+	
+	if(numargs == 1)
+	{
+		Sys_CreateConsole(g_wvptr->hInstance);
+	}
+	
+	NET_Init();
+	Sec_Init();
+	
+	
+	
+	FS_SetupSavePath(updatepath);
+	FS_SetupInstallPath(fs_write_base);
+	
+	Q_strncpyz(versionstring, version, sizeof(versionstring));
+
+	
+	
+	//Disable folder virtualization 
+    HANDLE Token;
+	DWORD disable;
+	
+    if (OpenProcessToken(GetCurrentProcess(), MAXIMUM_ALLOWED, &Token)){
+        SetTokenInformation(Token, (TOKEN_INFORMATION_CLASS)24, &disable, sizeof(disable));
+		CloseHandle(Token);
+    }
+	
+	if(Sec_Update( ) != 0)
+	{
+		Com_Printf("Update has failed\n");
+		MessageBoxA(NULL, "The new update failed to install.", "Call of Duty 4 - Update Failed", MB_OK | MB_ICONSTOP | MB_SETFOREGROUND);
+		CoD4UpdateShutdown( 1 );
+	}
+
+
+	/*
 	int i;
-	Com_Printf = sys_printf;
 	wchar_t from[1024];
 	wchar_t filenameUni[1024];
 	char to[1024];
 	wchar_t touni[1024];
 	char backup[1024];
-	char copybase[1024];
-	wchar_t copyupd[1024];
 	char outhash[256];
 	MSG msg;
-	
-	Q_strncpyz(copybase, fs_write_base, sizeof(copybase));
-	Q_strncpyzUni(copyupd, updatepath, sizeof(copyupd));
-	
-	FS_StripTrailingSeperator( copybase );
-	FS_StripTrailingSeperatorUni( copyupd );
-	
+
 	SV_Cmd_TokenizeString( dlhashs );
 	
 	if(SV_Cmd_Argc() & 1)
 	{
-		Com_Error("File hash list is corrupted\n");	
+		Com_Error(0,"File hash list is corrupted\n");	
 	}
 
 	
-	/* Verify all downloaded files */
+	// Verify all downloaded files
 	for(i = 0; i < SV_Cmd_Argc(); i += 2)
 	{
 		if ( GetMessage( &msg, NULL, 0, 0 ) )
@@ -880,7 +1346,7 @@ BOOL __cdecl CoD4UpdateMain(HMODULE hModule, const char* dllpath, const char* fs
 		
 		Q_StrToWStr(filenameUni , SV_Cmd_Argv(i), sizeof(filenameUni));
 		
-		Com_sprintfUni(from, sizeof(from), L"%s%c%s", copyupd, PATH_SEPUNI, filenameUni);
+		Com_sprintfUni(from, sizeof(from), L"%s%c%s", FS_GetSavePath(), PATH_SEPUNI, filenameUni);
 		
 		Q_strchrreplUni(from, L'/', PATH_SEPUNI);
 		Com_Printf("Verifying file: %s\n", SV_Cmd_Argv(i));
@@ -898,16 +1364,7 @@ BOOL __cdecl CoD4UpdateMain(HMODULE hModule, const char* dllpath, const char* fs
 	
 	Com_Printf("All files have been verified. Installing update...\n");
 	
-	
-	/* Disable folder virtualization */
-    HANDLE Token;
-	DWORD disable;
-	
-    if (OpenProcessToken(GetCurrentProcess(), MAXIMUM_ALLOWED, &Token)){
-        SetTokenInformation(Token, (TOKEN_INFORMATION_CLASS)24, &disable, sizeof(disable));
-		CloseHandle(Token);
-    }
-	
+
 	
 	for(i = 0; i < SV_Cmd_Argc(); i += 2)
 	{
@@ -919,7 +1376,7 @@ BOOL __cdecl CoD4UpdateMain(HMODULE hModule, const char* dllpath, const char* fs
 		
 		Q_StrToWStr(filenameUni , SV_Cmd_Argv(i), sizeof(filenameUni));
 		
-		Com_sprintfUni(from, sizeof(from), L"%s%c%s", copyupd, PATH_SEPUNI, filenameUni);
+		Com_sprintfUni(from, sizeof(from), L"%s%c%s", FS_GetSavePath(), PATH_SEPUNI, filenameUni);
 		Q_strchrreplUni(from, L'/', PATH_SEPUNI);
 		
 		if(!strcmp(SV_Cmd_Argv(i), "mss32.dl_")){
@@ -929,9 +1386,9 @@ BOOL __cdecl CoD4UpdateMain(HMODULE hModule, const char* dllpath, const char* fs
 			
 		}else{
 
-			Com_sprintf(backup, sizeof( backup ), "%s%c%s.old", copybase, PATH_SEP, SV_Cmd_Argv(i));
+			Com_sprintf(backup, sizeof( backup ), "%s%c%s.old", FS_GetInstallPath(), PATH_SEP, SV_Cmd_Argv(i));
 			Q_strchrrepl(backup, '/', PATH_SEP);
-			Com_sprintf(to, sizeof(to), "%s%c%s", copybase, PATH_SEP, SV_Cmd_Argv(i));		
+			Com_sprintf(to, sizeof(to), "%s%c%s", FS_GetInstallPath(), PATH_SEP, SV_Cmd_Argv(i));		
 			Q_strchrrepl(to, '/', PATH_SEP);
 		}
 		
@@ -941,7 +1398,7 @@ BOOL __cdecl CoD4UpdateMain(HMODULE hModule, const char* dllpath, const char* fs
 		
 		if(FS_FileExistsOSPath( backup ) == qtrue)
 		{
-			Com_Error("Autoupdate has failed. Couldn't delete file: %s", backup);
+			Com_Error(0,"Autoupdate has failed. Couldn't delete file: %s", backup);
 			return FALSE;
 		}
 		
@@ -950,7 +1407,7 @@ BOOL __cdecl CoD4UpdateMain(HMODULE hModule, const char* dllpath, const char* fs
 		
 		if(FS_FileExistsOSPath( to ) == qtrue)
 		{
-			Com_Error("Autoupdate has failed. Couldn't delete file: %s", to);
+			Com_Error(0,"Autoupdate has failed. Couldn't delete file: %s", to);
 			return FALSE;
 		}
 		
@@ -960,11 +1417,11 @@ BOOL __cdecl CoD4UpdateMain(HMODULE hModule, const char* dllpath, const char* fs
 		
 		if(FS_FileExistsOSPath( to ) == qfalse)
 		{
-			Com_Error("Autoupdate has failed. Your game installation is maybe corrupted now. Couldn't install file to: %s\nIf you game installation does not work anymore you have to manually install all update files.", to);
+			Com_Error(0,"Autoupdate has failed. Your game installation is maybe corrupted now. Couldn't install file to: %s\nIf you game installation does not work anymore you have to manually install all update files.", to);
 			return FALSE;
 		}
 	}
-
+*/
 	Com_Printf("Installation of updates has succeeded.\n");
 
 /*
@@ -982,7 +1439,21 @@ BOOL __cdecl CoD4UpdateMain(HMODULE hModule, const char* dllpath, const char* fs
 
 
 
-	MessageBoxA(NULL, "The new update has been installed successfully. Please restart Call of Duty 4 - Modern Warfare now.", "Call of Duty 4 - Update Installed", MB_OK | MB_ICONINFORMATION);
-	exit( 0 );
-	//return TRUE;
+	MessageBoxA(NULL, "The new update has been installed successfully. Please restart Call of Duty 4 - Modern Warfare now.", "Call of Duty 4 - Update Installed", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+	CoD4UpdateShutdown(0);
+	return 0;
+}
+
+
+void CoD4UpdateShutdown(int exitcode)
+{
+	NET_Shutdown();
+	Sys_DestroyConsole();
+	
+	Sleep(500);
+	
+	if(exitcode){
+		exit(exitcode);
+	}
+		
 }

@@ -9,6 +9,7 @@
 #include "q_platform.h"
 #include "httpftp.h"
 #include "qcommon.h"
+#include "windows_inc.h"
 
 #include <string.h>
 #include <stdint.h>
@@ -17,17 +18,6 @@
 #define TCP_TIMEOUT 12
 #define INITIAL_BUFFERLEN 1024
 
-#define Z_Malloc malloc
-#define Z_Free free
-#define Com_PrintWarning Com_Printf
-#define Com_PrintError Com_Printf
-#define Com_DPrintf Com_PrintNull
-
-void Com_PrintNull( const char *fmt, ... )
-{
-
-
-}
 
 /*
  ===================================================================
@@ -162,6 +152,10 @@ static void FT_ResetRequest( ftRequest_t* request )
 	request->mode = 0;
 	request->headerLength = 0;
 	request->contentLength = 0;
+	request->contentLengthArrived = 0;
+	request->currentChunkLength = 0;
+	request->currentChunkReadOffset = 0;	
+	request->chunkedEncoding = 0;
 	request->stage = 0;
 	request->protocol = 0;
 	MSG_Clear(&request->recvmsg);
@@ -285,24 +279,86 @@ static int FT_ReceiveData(ftRequest_t* request)
 
 /*
  ========================================================
- Functions for retriving a file located on a HTTP-Server
+ Functions for retrieving a file located on a HTTP-Server
  ========================================================
 */
+static void HTTP_EncodeChar(unsigned char chr, unsigned char* encodedchr)
+{
+	sprintf((char*)encodedchr, "%%%X", (char)chr);
+}
+
+static void HTTP_EncodeURL(char* inurl, char* outencodedurl, int len)
+{
+	int i, y;
+	unsigned char* url = (unsigned char*)inurl;
+	unsigned char* encodedurl = (unsigned char*)outencodedurl;
+	
+	for(i = 0, y = 0; y < len -4 && url[i]; i++)
+	{
+		switch(url[i])
+		{
+			case '<':
+			case '>':
+			case ' ':
+			case '"':
+			case '#':
+			case '%':			
+			case '{':
+			case '}':
+			case '|':
+			case '\\':
+			case '^':
+			case '~':
+			case '[':
+			case ']':
+			case '`':
+			
+				HTTP_EncodeChar(url[i], &encodedurl[y]);
+				y += 3;
+				break;
+			
+			default:
+				
+				if(url[i] > 0x7f || url[i] < 0x20)
+				{
+					HTTP_EncodeChar(url[i], &encodedurl[y]);
+					y += 3;
+				}else{
+					encodedurl[y] = url[i];
+					++y;
+				}
+				break;
+		}
+	}
+	encodedurl[y] = '\0';
+}
+
 
 static void HTTP_BuildNewRequest( ftRequest_t* request )
 {
 	char getbuffer[MAX_STRING_CHARS];
+	char encodedUrl[MAX_STRING_CHARS];
+	char address[MAX_STRING_CHARS];
+	char *port;
 	
 	request->protocol = FT_PROTO_HTTP;
 	request->active = qtrue;
 
+	Q_strncpyz(address, request->address, sizeof(address));
+	port = strstr(address, ":80");
+	if(port != NULL)
+	{
+		*port = '\0';
+	}
+	HTTP_EncodeURL(request->url, encodedUrl, sizeof(encodedUrl));
+	
 	Com_sprintf(getbuffer, sizeof(getbuffer),
-				"GET %s HTTP/1.1 \r\n"
-				"Host: %s \r\n"
-				"User-Agent: %s \r\n"
-				"Accept-Encoding: \r\n"
-				"Connection: Close\r\n"
-				"\r\n", request->url, request->address, "CoD4X HTTP Downloader");
+				"GET %s HTTP/1.1\r\n"
+				"Accept: */*\r\n"
+				"Host: %s\r\n"
+				"User-Agent: CoD4X HTTP Downloader\r\n"
+				"Connection: close\r\n"
+				"\r\n", encodedUrl, address);
 	
 	FT_AddData(request, getbuffer, strlen(getbuffer));
 
@@ -347,11 +403,69 @@ static void HTTPSplitURL(const char* url, char* address, int lenaddress, char* w
 }	
 
 
+static int HTTP_ProcessChunkedEncoding(ftRequest_t* request, qboolean connectionClosed)
+{
+	char line[1024];
+	int chunksize, writeoffset;
+	char *s;
+	char r, n;
+	MSG_BeginReading(&request->recvmsg);
+	request->recvmsg.readcount += request->headerLength;
+	request->recvmsg.readcount += request->currentChunkReadOffset;
+
+	do
+	{
+		MSG_ReadStringLine(&request->recvmsg, line, sizeof(line));
+		
+		s = strchr(line, '\r');
+		if(s)
+		{
+			*s = '\0';
+		}else if(connectionClosed){
+			return -1;
+		}else{
+			return 0;
+		}
+		
+		chunksize = strtol(line, NULL, 16);
+		if(chunksize == 0)
+		{
+			request->contentLength = request->currentChunkLength;
+			request->extrecvmsg = &request->recvmsg;
+			request->finallen = request->recvmsg.cursize;
+			return 1;	
+		}
+		if(request->recvmsg.cursize - request->recvmsg.readcount >= chunksize +2)
+		{
+			
+			writeoffset = request->headerLength + request->currentChunkLength;
+			memmove(request->recvmsg.data + writeoffset, request->recvmsg.data + request->recvmsg.readcount, chunksize);
+			request->currentChunkLength += chunksize;
+			request->recvmsg.readcount += chunksize;
+			request->currentChunkReadOffset = request->recvmsg.readcount - request->headerLength;
+		}else if(connectionClosed){
+			return -1;
+		}else{
+			return 0;
+		}
+		r = MSG_ReadByte(&request->recvmsg);
+		n = MSG_ReadByte(&request->recvmsg);
+		
+		if( r != '\r' || n != '\n' )
+		{
+			return -1;
+		}
+		
+	}while(1);
+
+}
+
+
 static int HTTP_SendReceiveData(ftRequest_t* request)
 {
 	char* line;
 	int status, i;
-	qboolean gotheader;
+	qboolean gotheader, connectionClosed;
 	char stringlinebuf[MAX_STRING_CHARS];
 	
 	if (request->sendmsg.cursize > 0) {
@@ -364,10 +478,20 @@ static int HTTP_SendReceiveData(ftRequest_t* request)
 
 	status = FT_ReceiveData(request);
 	
-	if (status == -1) {
-		return -1;
-	}else if (status == 0) {
-		return 0;
+	if(status < 0)
+	{
+		connectionClosed = qtrue;
+	}else{
+		connectionClosed = qfalse;		
+	}
+	
+	if (status == -1 || status == 0) {
+		if(request->chunkedEncoding && request->headerLength > 0)
+		{
+			return HTTP_ProcessChunkedEncoding(request, connectionClosed);
+		}else{
+			return status;
+		}
 	}
 	
 	if(request->finallen == -1)
@@ -429,15 +553,19 @@ static int HTTP_SendReceiveData(ftRequest_t* request)
 					Com_PrintError("Sec_GetHTTPPacket: Packet is corrupt!\nDebug: %s\n", line);
 					return -1;
 				}
+				request->contentLengthArrived = 1;
 				request->contentLength = atoi(line + 15);
 				if(request->contentLength < 0)
 				{
 					request->contentLength = 0;
 					return -1;
 				}
-			}
-			else if(!Q_stricmpn("Location:", line, 9))
-			{
+			}else if(!Q_stricmpn("Transfer-Encoding:", line, 18)){
+				if(strstr(line, "chunked"))
+				{
+					request->chunkedEncoding = 1;
+				}
+			}else if(!Q_stricmpn("Location:", line, 9)){
 				if(strlen(line +9) > 8)
 				{
 					/* We have to make it new... */
@@ -459,7 +587,6 @@ static int HTTP_SendReceiveData(ftRequest_t* request)
 					if(request->socket < 0)
 					{	
 						request->socket = -1;
-						FT_FreeRequest(request);
 						return -1;
 					}
 					HTTP_BuildNewRequest( request );
@@ -470,27 +597,42 @@ static int HTTP_SendReceiveData(ftRequest_t* request)
 		}
 		if(line[0] == '\0')
 			return -1;
-		
-		request->headerLength = request->recvmsg.readcount;		
-		request->finallen = request->contentLength + request->headerLength;
 
-		if(request->finallen > 1024*1024*640)
+		request->headerLength = request->recvmsg.readcount;
+		
+		if(request->contentLengthArrived)
 		{
-			request->finallen = request->headerLength;
+			request->finallen = request->contentLength + request->headerLength;		
+			if(request->finallen > 1024*1024*640)
+			{
+				request->finallen = request->headerLength;
+			}
 		}
 
 	}
 	/* Header was complete */
-	if( request->finallen > 0)
+	if( request->finallen > 0){
 		request->transferactive = qtrue;
+	}
 	
 	request->extrecvmsg = &request->recvmsg;
-	
-	if (request->totalreceivedbytes < request->finallen) {
-	/* Still needing bytes... */
-		return 0;
+	if(request->contentLengthArrived)
+	{
+		if (request->totalreceivedbytes < request->finallen) {
+		/* Still needing bytes... */
+			return 0;
+		}else{
+			/* Received full message */
+			return 1;
+		}
+	}
+	if(request->chunkedEncoding)
+	{
+		return HTTP_ProcessChunkedEncoding(request, connectionClosed);
 	}
 	/* Received full message */
+	request->finallen = request->totalreceivedbytes;
+	request->contentLength = request->totalreceivedbytes - request->headerLength;
 	return 1;
 	
 }
@@ -1286,11 +1428,10 @@ void FileDownloadFreeRequest(ftRequest_t* request)
 const char* FileDownloadGenerateProgress( ftRequest_t* request )
 {
 	static char line[97];
-	char bar[26];
-	int num;
 	float percent;
 	float rate;
 	int elapsedmsec;
+	int cursize;
 	msg_t *msg;
 	
 	if(request->transferactive == qfalse)
@@ -1310,32 +1451,33 @@ const char* FileDownloadGenerateProgress( ftRequest_t* request )
 	else
 		return "";
 	
-	if(msg->maxsize > 0 && msg->cursize > 0)
-		percent = 100.0f * ((float)msg->cursize / (float)msg->maxsize);
+	cursize = msg->cursize - request->headerLength;
+	
+	if(request->contentLength > 0 && cursize > 0)
+		percent = 100.0f * ((float)cursize / (float)request->contentLength);
 	else
 		percent = 0.0f;
 	
-	num = (int)(percent / 4);
-	
-	if(num > sizeof(bar) -1)
-	{
-		num = sizeof(bar) -1;
+	if(cursize < 0){
+		cursize = 0;
 	}
-	Com_Memset(bar, ' ', sizeof(bar));
-	Com_Memset(bar, '=', num);
-	
-	bar[sizeof(bar) -1] = '\0';
 	
 	elapsedmsec = Sys_Milliseconds() - request->transferStartTime;
 	if (elapsedmsec != 0) {
-		rate = (((float)msg->cursize/1024.0f) * 1000.0f) / (float)elapsedmsec;
+		rate = (((float)cursize/1024.0f) * 1000.0f) / (float)elapsedmsec;
 	}else {
 		rate = 0;
 	}
 	
+	if(cursize > 0 && cursize == request->contentLength)
+	{
+		line[0] = '\0';
+	}else{
+		Com_sprintf(line, sizeof(line), "Receiving: %.1f/%.1f kBytes  @  %.1f kB/s", (float)cursize/1024.0f, (float)request->contentLength/1024.0f, rate);
+	}
 	
-	Com_sprintf(line, sizeof(line), "\rReceiving: %s %.1f/%.1f kBytes @ %.1f kB/s", bar, (float)msg->cursize/1024.0f, (float)msg->maxsize/1024.0f, rate);
-	
+	Sys_SetStatusText( line, 1);
+	Sys_SetProgress((int)percent);
 	return line;
 	
 }

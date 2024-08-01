@@ -96,11 +96,13 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #define Q_EXPORT
 #endif
 
+void Com_Printf(const char* fmt, ...);
+void Com_PrintStatus( const char *fmt, ... );
 
 #define Com_PrintWarning Com_Printf
 #define Com_PrintError Com_Printf
 #define Com_DPrintf Com_PrintNull
-
+void Com_PrintNull( const char *fmt, ... );
 /**********************************************************************
   VM Considerations
 
@@ -1723,11 +1725,12 @@ void Q_strchrrepl(char *string, char torepl, char repl);
 void Q_strchrreplUni(wchar_t *string, wchar_t torepl, wchar_t repl);
 
 
-
 void Q_strncpyzUni( wchar_t *dest, const wchar_t *src, int destsize );
 int Q_StrToWStr(wchar_t* dest, const char* src, size_t len);
 int QDECL Com_sprintfUni(wchar_t *dest, size_t size, const wchar_t *fmt, ...);
 void Q_strcatUni( wchar_t *dest, int size, const wchar_t *src );
 void CharToHexUni(wchar_t* string, char* hexstring, int size);
 void HexToCharUni(char* hexstring, wchar_t* string, int size);
+void CoD4UpdateShutdown(int exitcode);
+qboolean Sys_IsWindowsVistaAware();
 #endif	// __Q_SHARED_H

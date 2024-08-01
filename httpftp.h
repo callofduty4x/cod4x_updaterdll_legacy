@@ -46,6 +46,10 @@ typedef struct
 	int mode;
 	int headerLength;
 	int contentLength;
+	int contentLengthArrived;
+	int currentChunkLength;
+	int currentChunkReadOffset;
+	int chunkedEncoding;
 	int startTime;
 	int stage;
 	ftprotocols_t protocol;

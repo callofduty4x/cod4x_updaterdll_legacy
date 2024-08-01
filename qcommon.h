@@ -73,7 +73,7 @@ void MSG_WriteBigString( msg_t *sb, const char *s ) ;
 int MSG_ReadByte( msg_t *msg ) ;
 int MSG_ReadShort( msg_t *msg ) ;
 int MSG_ReadLong( msg_t *msg ) ;
-char *MSG_ReadString( msg_t *msg ) ;
+char *MSG_ReadString( msg_t *msg, char* bigstring, int len );
 char *MSG_ReadStringLine( msg_t *msg, char* bigstring, int len );
 void MSG_ReadData( msg_t *msg, void *data, int len ) ;
 void MSG_ClearLastReferencedEntity( msg_t *msg ) ;
@@ -379,11 +379,7 @@ void		Info_Print( const char *s );
 
 void		Com_BeginRedirect (char *buffer, int buffersize, void (*flush)(char *));
 void		Com_EndRedirect( void );
-void 		QDECL Com_Printf( const char *fmt, ... ) __attribute__ ((format (printf, 1, 2)));
-void 		QDECL Com_DPrintf( const char *fmt, ... ) __attribute__ ((format (printf, 1, 2)));
 void		Com_PrintMessage( int output, char *msg, msgtype_t type);
-void 		QDECL Com_PrintError( const char *fmt, ... );
-void 		QDECL Com_PrintWarning( const char *fmt, ... );
 void 		QDECL Com_Error( int code, const char *fmt, ... ) __attribute__ ((format (printf, 2, 3)));
 void		Com_PrintMessage( int output, char *msg, msgtype_t type);
 void		Com_GameRestart(int checksumFeed, qboolean clientRestart);
@@ -567,8 +563,8 @@ fileHandle_t FS_SV_FOpenFileWrite( const char *filename );
 int		FS_SV_FOpenFileRead( const char *filename, fileHandle_t *fp );
 void	FS_SV_Rename( const char *from, const char *to );
 int __cdecl FS_FOpenFileRead(const char* filename, fileHandle_t* returnhandle);
-
-
+qboolean FS_SV_FileExists( const char *filename );
+void FS_SV_Remove( const char *filename );
 // if uniqueFILE is true, then a new FILE will be fopened even if the file
 // is found in an already open pak file.  If uniqueFILE is false, you must call
 // FS_FCloseFile instead of fclose, otherwise the pak FILE would be improperly closed
@@ -669,12 +665,17 @@ void FS_DisablePureCheck(int state);
 void FS_ShiftStr( const char *string, int shift, char *buf );
 void FS_ReplaceSeparators( char *path );
 void FS_BuildOSPathForThread(const char *base, const char *game, const char *qpath, char *fs_path, int fs_thread);
+void FS_BuildOSPathForThreadUni(const wchar_t *base, const char *game, const char *qpath, wchar_t *fs_path, int fs_thread);
 void FS_RenameOSPath( const char *from_ospath, const char *to_ospath );
-void FS_StripTrailingSeperator( char *path );
+//void FS_StripTrailingSeperator( char *path );
 qboolean FS_FileExistsOSPath( const char *osPath );
 void FS_RemoveOSPath( const char *osPath ) ;
 qboolean FS_WriteTestOSPath( const char *osPath );
-
+int FS_SV_WriteFileToSavePath( const char *qpath, const void *buffer, int size );
+char* FS_GetInstallPath();
+wchar_t* FS_GetInstallPathUni(wchar_t* buf, int size);
+wchar_t* FS_GetSavePath();
+void FS_RenameOSPathUni( const wchar_t *from_ospath, const wchar_t *to_ospath );
 
 #define fs_gameDirVar getcvaradr(0xcb199a4)
 #define fs_homepath getcvaradr(0xCB1DCC0)
@@ -686,8 +687,8 @@ void Cbuf_Execute(  );
 
 void Sys_Print( const char *msg );
 char *Sys_ConsoleInput( void );
-void Sys_EnterCriticalSection(int section);
-void Sys_LeaveCriticalSection(int section);
+void Sys_EnterCriticalSection( );
+void Sys_LeaveCriticalSection( );
 int Sys_Milliseconds(void);
 int Sys_TimeGetTime();
 const void* Sys_GetValue(int key);
@@ -769,5 +770,19 @@ void* __cdecl Z_Malloc(int bytes);
 void __cdecl Z_Free(void* ptr);
 void Sys_RunUpdater( char* autoupdateFilenameArg );
 void Sys_SetupUpdater(  );
+const char* Com_GetVersion();
+int Sec_Update( );
+
+
+#define cod4xpem "-----BEGIN PUBLIC KEY-----\n\
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwu8nEsLD4sTP+Py30Fnq\n\
+UOlgZZrGb7aIiQhn8iXAXXuhLC0pKOQ2drq3KWMbHeiNSAaxI2TGRirYCiZETnkX\n\
+WCt0NxvrGtbvbsDHBaVju/5X9CiyJBFr+YFhZ8RK/UH8KxMqIAlvN5f3H30rPqwB\n\
+QlI+scIXp5ZrFt97zaYw4czpWod4iZVm4O8fNJJAFq9qR2yxVyKaP7DZr3wZEt1+\n\
+WJrOmkWPYkNC/YC1qnY35ubDAS7vZPvPtmw4oeJKSsTFwR5ddKMiLvPzRW3KgpT1\n\
+B4zHBTO1xOKTYvEQqJqspz1ELUeSPemEYmZEZdakVLDKyzPZ5+a0WR4q3pDtmrZG\n\
+KwIDAQAB\n\
+-----END PUBLIC KEY-----"
+
 
 #endif
