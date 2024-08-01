@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <mmsystem.h>
+#include <Shellapi.h>
 #include "blake\blake2.h"
 #include "windows_inc.h"
 
@@ -617,97 +618,6 @@ int FS_ReadFileOSPath( const char *ospath, void **buffer ) {
 	return len;
 }
 
-qboolean FS_FileHashUni(const wchar_t* ospath, char* outhash, int lenhash)
-{
-	byte	buf[0x20000];
-	int		len, readlen, i;
-	FILE*   h;
-	blake2s_state S;
-	uint8_t hash[BLAKE2S_OUTBYTES];
-	  
-	if ( !ospath || !ospath[0] ) {
-		Com_Error(0, "FS_FileHash with empty name\n" );
-	}
-	
-	if ( !outhash || lenhash < 2*BLAKE2S_OUTBYTES +1 ) {
-		Com_Error(0, "FS_FileHash with invalid argument\n" );
-	}	
-		
-	// look for it in the filesystem or pack files
-	len = FS_FOpenFileReadOSPathUni( ospath, &h );
-	if ( len == -1 ) {
-		return qfalse;
-	}
-
-    if( blake2s_init( &S, sizeof(hash) ) < 0 )
-	{
-		Com_Error(0,"blake2s_init() has failed");
-	}
-	
-	do
-	{
-		readlen = FS_ReadOSPath (buf, sizeof(buf), h);
-		blake2s_update( &S, ( uint8_t * )buf, readlen );
-	}while(readlen > 0);
-
-	blake2s_final( &S, hash, sizeof(hash) );
-	
-	FS_FCloseFileOSPath( h );
-
-	for( i = 0; i < BLAKE2S_OUTBYTES; i++)
-	{
-		sprintf(&outhash[2*i], "%02x", hash[i] );
-	}
-	outhash[2*i] = '\0';
-	
-	return qtrue;
-}
-
-qboolean FS_FileHash(const char* ospath, char* outhash, int lenhash)
-{
-	byte	buf[0x20000];
-	int		len, readlen, i;
-	FILE*   h;
-	blake2s_state S;
-	uint8_t hash[BLAKE2S_OUTBYTES];
-	  
-	if ( !ospath || !ospath[0] ) {
-		Com_Error(0, "FS_FileHash with empty name\n" );
-	}
-	
-	if ( !outhash || lenhash < 2*BLAKE2S_OUTBYTES +1 ) {
-		Com_Error(0, "FS_FileHash with invalid argument\n" );
-	}	
-		
-	// look for it in the filesystem or pack files
-	len = FS_FOpenFileReadOSPath( ospath, &h );
-	if ( len == -1 ) {
-		return qfalse;
-	}
-
-    if( blake2s_init( &S, sizeof(hash) ) < 0 )
-	{
-		Com_Error(0,"blake2s_init() has failed");
-	}
-	
-	do
-	{
-		readlen = FS_ReadOSPath (buf, sizeof(buf), h);
-		blake2s_update( &S, ( uint8_t * )buf, readlen );
-	}while(readlen > 0);
-
-	blake2s_final( &S, hash, sizeof(hash) );
-	
-	FS_FCloseFileOSPath( h );
-
-	for( i = 0; i < BLAKE2S_OUTBYTES; i++)
-	{
-		sprintf(&outhash[2*i], "%02x", hash[i] );
-	}
-	outhash[2*i] = '\0';
-	
-	return qtrue;
-}
 
 
 void FS_BuildOSPathForThreadUni(const wchar_t *base, const char *game, const char *qpath, wchar_t *fs_path, int fs_thread)
@@ -1353,6 +1263,13 @@ void FS_SetupSavePath(const wchar_t *updatepath)
 {
 	Q_strncpyzUni(fs_savepathbuf, updatepath, sizeof(fs_savepathbuf));
 	FS_StripTrailingSeperatorUni( fs_savepathbuf );
+			
+	if(wcsncmp(&fs_savepathbuf[wcslen(fs_savepathbuf) - 7], L"updates", 7) == 0)
+	{
+		fs_savepathbuf[wcslen(fs_savepathbuf) - 8] = '\0';
+	}
+	FS_StripTrailingSeperatorUni( fs_savepathbuf );
+
 	FS_ReplaceSeparatorsUni(fs_savepathbuf);
 }
 
@@ -1407,12 +1324,135 @@ qboolean Sys_IsWindowsVistaAware()
 	return windowsVistaAware;
 }
 
+/*
+===========
+FS_WriteTestOSPath
+
+===========
+*/
+//returns true if writetest was successful
+qboolean FS_WriteTestOSPath( const char *osPath ) {
+	
+	FILE* fh = fopen( osPath, "wb" );
+	char testbuf[] = "MZ_test";
+	
+	if(fh == NULL)
+		return qfalse;
+	
+	fwrite(testbuf, 1, sizeof(testbuf), fh);
+	fclose( fh );
+	
+	fh = fopen( osPath, "rb" );
+	
+	if(fh == NULL)
+		return qfalse;
+	fclose( fh );
+	
+	remove( osPath );
+	
+	return qtrue;
+	
+}
+
+//Returns false if write access is denied
+qboolean Sys_TestPermissions()
+{
+	char testpath[MAX_STRING_CHARS];
+	char exepath[MAX_STRING_CHARS];
+	unsigned short rannum;
+
+
+	GetModuleFileNameA(NULL, exepath, sizeof(exepath));
+
+	if(strlen(exepath) < 9)
+	{
+		return qfalse;
+	}
+
+	rannum = GetTickCount();
+	Com_sprintf( testpath, sizeof(testpath), "%s.%u_test.exe", exepath, rannum);
+
+	if(FS_WriteTestOSPath( testpath ) == qtrue)
+	{
+		return qtrue;
+	}
+	return qfalse;
+}
+
+char sys_restartCmdLine[4096];
+
+void Sys_SetRestartParams(const char* params)
+{
+	Q_strncpyz(sys_restartCmdLine, params, sizeof(sys_restartCmdLine));
+}
+
+void Sys_RestartProcess()
+{
+	void* HWND = NULL;
+	char displayMessageBuf[1024];
+	char exefile[1024];
+	const char* method;
+    SHELLEXECUTEINFO sei;
+	int pid;
+
+
+	GetModuleFileNameA(NULL, exefile, sizeof(exefile));
+
+	if(strlen(exefile) < 9)
+	{
+		Com_Error(0, "Can not restart with elevated permissions. GetModuleFileNameA(NULL) fails");
+		return;
+	}
+
+
+	method = "runas";
+	MessageBoxA(HWND, "Note: Installation of this update for Call of Duty 4 will require extended permissions" , "Call of Duty 4 - Autoupdate", MB_OK | MB_ICONEXCLAMATION);
+
+	// Launch itself as administrator.
+	memset(&sei, 0, sizeof(sei));
+	sei.cbSize = sizeof(sei);
+    sei.lpVerb = method;
+    sei.lpFile = exefile;
+	sei.lpParameters = sys_restartCmdLine;
+    sei.hwnd = HWND;
+    sei.nShow = SW_NORMAL;
+	sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+
+	if (!ShellExecuteExA(&sei))
+	{
+		FormatMessageA( FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+						0, GetLastError(), 0x400, displayMessageBuf, sizeof(displayMessageBuf), 0);
+
+		MessageBoxA(HWND, va("ShellExec of commandline: %s %s has failed.\nError: %s\n" , exefile, sys_restartCmdLine, displayMessageBuf), "CoD4 X Update - Error", MB_OK | MB_ICONERROR);
+		return;
+	}
+	if(sei.hProcess == NULL)
+	{
+		return;
+	}
+	pid = GetProcessId(sei.hProcess);
+    AllowSetForegroundWindow(pid);
+}
+
+
+void CoD4UpdateShutdown(int exitcode)
+{
+	NET_Shutdown();
+	Sys_DestroyConsole();
+	
+	Sleep(500);
+	
+	if(exitcode){
+		exit(exitcode);
+	}
+		
+}
 
 BOOL __cdecl CoD4UpdateMain(HMODULE hModule, const char* fs_write_base, const wchar_t* updatepath, const char* nullver, int numargs, WinVars_t* g_wvptr )
 {
 
 	Sys_InitializeCriticalSection();
-	
+
 	Sys_CheckOS();
 	
 	if(numargs == 1)
@@ -1420,6 +1460,8 @@ BOOL __cdecl CoD4UpdateMain(HMODULE hModule, const char* fs_write_base, const wc
 		Sys_CreateConsole(g_wvptr->hInstance);
 	}
 	
+	SleepEx(2500, FALSE);
+
 	NET_Init();
 	Sec_Init();
 	
@@ -1448,11 +1490,16 @@ BOOL __cdecl CoD4UpdateMain(HMODULE hModule, const char* fs_write_base, const wc
 
 	qsort(filteredList, j, sizeof(filteredList[0]), Sys_SortVersionDirs);
 
-	filestring = filteredList[j -1];
+	if(j > 0)
+	{
+		filestring = filteredList[j -1];
+		int version = atoi(filestring + 6);
+		Com_sprintf(versionstring, sizeof(versionstring), "%d.x", version);
+	}else{
+		Com_sprintf(versionstring, sizeof(versionstring), "1.0");
+	}
 
-	int version = atoi(filestring + 6);
 
-	Com_sprintf(versionstring, sizeof(versionstring), "%d.x", version);
 
 	Sys_FreeFileList( list );
 
@@ -1474,144 +1521,15 @@ BOOL __cdecl CoD4UpdateMain(HMODULE hModule, const char* fs_write_base, const wc
 	}
 
 
-	/*
-	int i;
-	wchar_t from[1024];
-	wchar_t filenameUni[1024];
-	char to[1024];
-	wchar_t touni[1024];
-	char backup[1024];
-	char outhash[256];
-	MSG msg;
-
-	SV_Cmd_TokenizeString( dlhashs );
-	
-	if(SV_Cmd_Argc() & 1)
+	if(sys_restartCmdLine[0] == 0)
 	{
-		Com_Error(0,"File hash list is corrupted\n");	
+		Com_Printf("Installation of updates has succeeded.\n");
+		MessageBoxA(NULL, "The new update has been installed successfully. Please restart Call of Duty 4 - Modern Warfare now.", "Call of Duty 4 - Update Installed", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+		CoD4UpdateShutdown(0);
+
+	}else{
+		CoD4UpdateShutdown(0);
+		Sys_RestartProcess();
 	}
-
-	
-	// Verify all downloaded files
-	for(i = 0; i < SV_Cmd_Argc(); i += 2)
-	{
-		if ( GetMessage( &msg, NULL, 0, 0 ) )
-		{
-			TranslateMessage( &msg );
-			DispatchMessage( &msg );
-		}
-		
-		Q_StrToWStr(filenameUni , SV_Cmd_Argv(i), sizeof(filenameUni));
-		
-		Com_sprintfUni(from, sizeof(from), L"%s%c%s", FS_GetSavePath(), PATH_SEPUNI, filenameUni);
-		
-		Q_strchrreplUni(from, L'/', PATH_SEPUNI);
-		Com_Printf("Verifying file: %s\n", SV_Cmd_Argv(i));
-		if( FS_FileHashUni( from, outhash, sizeof(outhash) ) == qfalse)
-		{
-			Com_ErrorUni(L"Autoupdate has failed. Couldn't read file: %s", from);
-		}
-		
-		if(strcmp( outhash, SV_Cmd_Argv(i+1)))
-		{
-			Com_Printf("Expected hash: %s, Received hash: %s\n", SV_Cmd_Argv(i+1), outhash);
-			Com_ErrorUni( L"Autoupdate has failed. Invalid hash of downloaded file %s", from );
-		}
-	}
-	
-	Com_Printf("All files have been verified. Installing update...\n");
-	
-
-	
-	for(i = 0; i < SV_Cmd_Argc(); i += 2)
-	{
-		if ( GetMessage( &msg, NULL, 0, 0 ) )
-		{
-			TranslateMessage( &msg );
-			DispatchMessage( &msg );
-		}
-		
-		Q_StrToWStr(filenameUni , SV_Cmd_Argv(i), sizeof(filenameUni));
-		
-		Com_sprintfUni(from, sizeof(from), L"%s%c%s", FS_GetSavePath(), PATH_SEPUNI, filenameUni);
-		Q_strchrreplUni(from, L'/', PATH_SEPUNI);
-		
-		if(!strcmp(SV_Cmd_Argv(i), "mss32.dl_")){
-			
-			Com_sprintf(backup, sizeof( backup ), "%s.old", dllpath);			
-			Com_sprintf(to, sizeof(to), "%s", dllpath);
-			
-		}else{
-
-			Com_sprintf(backup, sizeof( backup ), "%s%c%s.old", FS_GetInstallPath(), PATH_SEP, SV_Cmd_Argv(i));
-			Q_strchrrepl(backup, '/', PATH_SEP);
-			Com_sprintf(to, sizeof(to), "%s%c%s", FS_GetInstallPath(), PATH_SEP, SV_Cmd_Argv(i));		
-			Q_strchrrepl(to, '/', PATH_SEP);
-		}
-		
-		Com_Printf( "Installing updatefile %s\n", Cmd_Argv(i) );
-		
-		FS_RemoveOSPath( backup );
-		
-		if(FS_FileExistsOSPath( backup ) == qtrue)
-		{
-			Com_Error(0,"Autoupdate has failed. Couldn't delete file: %s", backup);
-			return FALSE;
-		}
-		
-		FS_RenameOSPath( to, backup );
-		FS_RemoveOSPath( to );
-		
-		if(FS_FileExistsOSPath( to ) == qtrue)
-		{
-			Com_Error(0,"Autoupdate has failed. Couldn't delete file: %s", to);
-			return FALSE;
-		}
-		
-		Q_StrToWStr(touni , to, sizeof(touni));
-
-		FS_RenameOSPathUni( from, touni );
-		
-		if(FS_FileExistsOSPath( to ) == qfalse)
-		{
-			Com_Error(0,"Autoupdate has failed. Your game installation is maybe corrupted now. Couldn't install file to: %s\nIf you game installation does not work anymore you have to manually install all update files.", to);
-			return FALSE;
-		}
-	}
-*/
-	Com_Printf("Installation of updates has succeeded.\n");
-
-/*
-	unsigned int maxwait;
-	
-	maxwait = Sys_MillisecondsRaw() + 5000;
-	do{
-		if ( !GetMessage( &msg, NULL, 0, 0 ) ) {
-			break;
-		}
-		TranslateMessage( &msg );
-		DispatchMessage( &msg );
-	}while( Sys_MillisecondsRaw() < maxwait );
-*/
-
-
-
-	MessageBoxA(NULL, "The new update has been installed successfully. Please restart Call of Duty 4 - Modern Warfare now.", "Call of Duty 4 - Update Installed", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
-	CoD4UpdateShutdown(0);
 	return 0;
 }
-
-
-void CoD4UpdateShutdown(int exitcode)
-{
-	NET_Shutdown();
-	Sys_DestroyConsole();
-	
-	Sleep(500);
-	
-	if(exitcode){
-		exit(exitcode);
-	}
-		
-}
-

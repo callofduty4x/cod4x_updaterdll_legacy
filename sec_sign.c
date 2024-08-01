@@ -199,3 +199,28 @@ qboolean Sec_VerifyMemory(const char* expectedb64hash, void* memory, int lenmem)
 	return qtrue;
 	
 }
+
+qboolean Sec_VerifyFile(const char* expectedb64hash, const wchar_t* filepath)
+{
+	FILE *fp;
+	int readlen;
+
+	int len = FS_FOpenFileReadOSPathUni( filepath, &fp );
+	if(len < 1)
+	{
+		return qfalse;
+	}
+	unsigned char* data = malloc(len);
+	readlen = FS_ReadOSPath (data, len, fp);
+	if(readlen != len)
+	{
+		FS_FCloseFileOSPath(fp);
+		free(data);
+		return qfalse;
+	}
+	FS_FCloseFileOSPath(fp);
+
+	qboolean valid = Sec_VerifyMemory(expectedb64hash, data, readlen);
+	free(data);
+	return valid;
+}

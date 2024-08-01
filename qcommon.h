@@ -772,7 +772,10 @@ void Sys_RunUpdater( char* autoupdateFilenameArg );
 void Sys_SetupUpdater(  );
 const char* Com_GetVersion();
 int Sec_Update( );
-
+int FS_FOpenFileReadOSPathUni( const wchar_t *filename, FILE **fp );
+int FS_ReadOSPath( void *buffer, int len, FILE* f );
+qboolean FS_FCloseFileOSPath( FILE* f );
+qboolean Sys_TestPermissions();
 
 #define cod4xpem "-----BEGIN PUBLIC KEY-----\n\
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwu8nEsLD4sTP+Py30Fnq\n\

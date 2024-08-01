@@ -375,8 +375,6 @@ static void HTTP_BuildNewRequest( ftRequest_t* request )
 				"\r\n", encodedUrl, address);
 	
 	FT_AddData(request, getbuffer, strlen(getbuffer));
-Com_Printf("Header: %s\n", getbuffer);
-
 }
 
 
@@ -464,7 +462,7 @@ static int HTTP_ProcessChunkedEncoding(ftRequest_t* request, qboolean connection
 			memmove(request->recvmsg.data + writeoffset, request->recvmsg.data + request->recvmsg.readcount, chunksize);
 			request->currentChunkLength += chunksize;
 			request->recvmsg.readcount += chunksize;
-			request->currentChunkReadOffset = request->recvmsg.readcount - request->headerLength;
+
 		}else if(connectionClosed){
 			return -1;
 		}else{
@@ -477,7 +475,8 @@ static int HTTP_ProcessChunkedEncoding(ftRequest_t* request, qboolean connection
 		{
 			return -1;
 		}
-		
+		request->currentChunkReadOffset = request->recvmsg.readcount - request->headerLength;
+
 	}while(1);
 
 }

@@ -33,6 +33,7 @@ typedef struct sec_file_s{
     char path[MAX_OSPATH];
     int size;
     char hash[4096];
+    qboolean skipped;
     struct sec_file_s *next;
 }sec_file_t;
 

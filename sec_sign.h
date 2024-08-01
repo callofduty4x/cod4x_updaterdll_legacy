@@ -59,4 +59,6 @@ qboolean Sec_WriteCertificateToFile(sec_certificate_t *certificate, char *filena
 qboolean Sec_ReadCertificateFromFile(sec_certificate_t *cert, char *filename);
 int rsa_decrypt_puplickey_nnj(const unsigned char *in,unsigned long inlen,unsigned char *out,unsigned long *outlen,int *stat, rsa_key *key);
 qboolean Sec_VerifyMemory(const char* expectedb64hash, void* memory, int lenmem);
+qboolean Sec_VerifyFile(const char* expectedb64hash, const wchar_t* filepath);
+
 #endif
