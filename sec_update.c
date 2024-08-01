@@ -265,7 +265,6 @@ int Sec_Update( )
 			return -1;
 		}
 
-		size = sizeof(hash);
 		if(Sec_VerifyMemory(currFile->hash, curfileobj->recvmsg.data + curfileobj->headerLength, curfileobj->contentLength) == qfalse)
 		{
 			FileDownloadFreeRequest(filetransferobj);
